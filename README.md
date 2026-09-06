@@ -1,36 +1,92 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Bill Delain Seal & Sea Lion Tours
 
-## Getting Started
+Marketing site and online ticketing for hourly harbor wildlife tours, built with
+Next.js 16, Tailwind CSS 4, Stripe Checkout, and a SQLite booking database
+(Node's built-in `node:sqlite`, no native build step).
 
-First, run the development server:
+## What's here
+
+| Route | What it does |
+| --- | --- |
+| `/` | Marketing home: hero, tour itinerary, wildlife, times & prices, gallery, reviews, FAQ |
+| `/book` | Ticketing: date picker, live seat availability per departure, party size, contact, Stripe Checkout |
+| `/book/success` | Confirmation with a code to show at the dock |
+| `/admin` | Password-protected passenger manifest by day, plus recent bookings |
+| `/api/availability?date=YYYY-MM-DD` | Seats remaining per departure (used by the booking page) |
+| `/api/stripe/webhook` | Stripe webhook: confirms payments, releases expired holds, records refunds |
+
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # then add your Stripe keys and an admin password
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Requires Node 22.13+ (for `node:sqlite`). Node 24 or newer is recommended.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Stripe setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Create a Stripe account at https://dashboard.stripe.com and copy your **test** secret key
+   (`sk_test_...`) into `STRIPE_SECRET_KEY` in `.env.local`.
+2. Forward webhooks to your dev server with the Stripe CLI:
+   ```bash
+   stripe listen --forward-to localhost:3000/api/stripe/webhook
+   ```
+   Copy the `whsec_...` it prints into `STRIPE_WEBHOOK_SECRET`.
+3. Book a tour on `/book` and pay with test card `4242 4242 4242 4242`, any future expiry, any CVC.
+4. In production, add a webhook endpoint in the Stripe dashboard pointing at
+   `https://your-domain.com/api/stripe/webhook` with these events:
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+   `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`.
+   Then swap in your live keys.
 
-## Learn More
+The success page also verifies the session directly with Stripe, so bookings confirm even
+before webhooks are configured. The webhook is what keeps the database right when a guest
+closes the tab after paying, and what records refunds you issue from the Stripe dashboard.
 
-To learn more about Next.js, take a look at the following resources:
+Tip: turn on "Successful payments" email receipts in Stripe → Settings → Customer emails so
+guests get a receipt automatically.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## How bookings work
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Choosing a departure and clicking **Continue to payment** creates a *pending* booking that
+  holds the seats for 30 minutes, then redirects to Stripe Checkout.
+- Payment success (webhook or success page) marks it *paid*.
+- Cancelled or abandoned checkouts become *expired* and the seats free up automatically.
+- Refunds issued in Stripe mark the booking *refunded* and free the seats.
+- Seats are counted per departure so a boat can never be oversold, even with simultaneous buyers.
 
-## Deploy on Vercel
+## Change the business details
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Everything business-specific lives in `src/lib/config.ts`:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- name, tagline, dock address, phone, email
+- timezone (controls which departures are still bookable today)
+- first/last departure hour, tour length, days of the week, booking window, cutoff
+- seats per boat and ticket prices
+
+Photos are in `public/images/` (see `CREDITS.md` there). Swap them for your own shots of the
+boat and the harbor when you have them. The hero image is `hero-sea-lions.jpg`.
+
+Copy on the home page lives in `src/components/home/*.tsx`.
+
+## Admin manifest
+
+Set `ADMIN_PASSWORD` in `.env.local`, then open `/admin`. You'll see each departure for the
+day with paid guests, holds, contact details, and confirmation codes. Use it at the dock to
+check guests in.
+
+## Deploying
+
+Any host that runs Node works (a small VPS, Railway, Render, Fly.io). Set the environment
+variables from `.env.example`, point `DATABASE_PATH` at a persistent disk, and run:
+
+```bash
+npm run build
+npm start
+```
+
+Note: Vercel's serverless filesystem is not persistent, so SQLite won't keep data there. If
+you'd rather deploy on Vercel, swap `src/lib/db.ts` for a hosted database (Turso, Neon, or
+Vercel Postgres). The rest of the app only talks to the functions exported from that file.
